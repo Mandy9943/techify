@@ -3,7 +3,8 @@ const siteMetadata = {
   title: 'Techify Blog',
   author: 'Armando Cesar Martin Calderon',
   headerTitle: 'Techify',
-  description: 'A blog about web development and technology trends',
+  description:
+    'Discover the latest insights and trends in web development and technology on Techify Blog. Stay updated with essential tools and tips for 2024 and beyond.',
   language: 'en-us',
   theme: 'dark', // system, dark or light
   siteUrl: 'https://techify.blog',

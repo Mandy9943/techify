@@ -15,14 +15,14 @@ const Header = () => {
             <div className="mr-3">
               <Image
                 src={siteMetadata.siteLogo}
-                alt="logo"
+                alt="Techify Blog Logo"
                 width={312}
                 height={100}
                 className="hidden dark:block"
               />
               <Image
                 src={siteMetadata.siteLogoBlack}
-                alt="logo"
+                alt="Techify Blog Logo"
                 width={312}
                 height={100}
                 className="block dark:hidden"
