@@ -1,23 +1,30 @@
 ---
-title: 'Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS'
+title: 'Step-by-Step Guide: Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS'
 date: '2024-09-30'
-tags: ['web development', 'deployment', 'nextjs', 'ubuntu', 'nginx', 'pm2']
+tags: ['web development', 'next.js', 'ubuntu', 'nginx', 'pm2', 'https', 'vps']
 layout: PostLayout
-summary: A comprehensive guide to deploying a Next.js application on an Ubuntu VPS using Nginx, PM2, and securing it with HTTPS.
+summary: 'Learn how to deploy a Next.js application on an Ubuntu VPS using Nginx as a reverse proxy, PM2 for process management, and secure it with HTTPS. This comprehensive guide covers everything from server setup to SSL configuration.'
 ---
 
-# Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS
+Deploying a Next.js application on a Virtual Private Server (VPS) can be challenging, especially when integrating technologies like Nginx, PM2, and HTTPS. This comprehensive guide will walk you through each step of the process, using an Ubuntu 24.04.1 LTS VPS to deploy a Next.js app from a GitHub repository.
 
-## Introduction
+By the end of this tutorial, you'll have a fully functional, secure Next.js application running on your own VPS.
 
-Deploying a Next.js application on a Virtual Private Server (VPS) can be a complex process, especially when incorporating technologies like Nginx, PM2, and HTTPS. This guide will walk you through each step, using an Ubuntu 24.04.1 LTS VPS to deploy a Next.js app from a GitHub repository.
+## Why Deploy on a VPS?
+
+Before we dive into the deployment process, let's discuss why you might choose to deploy on a VPS:
+
+1. **Cost-effective**: VPS hosting can be more affordable than managed services for high-traffic sites.
+2. **Customization**: Full control over your server environment and configurations.
+3. **Scalability**: Easily upgrade resources as your application grows.
+4. **Learning opportunity**: Gain valuable experience in server management and deployment processes.
 
 ## Prerequisites
 
 Before you begin, ensure you have:
 
 - A VPS running Ubuntu 24.04.1 LTS
-- A registered domain name (we'll use `combohub.shop` in this example)
+- A registered domain name (we'll use `example.com` in this guide)
 - A Next.js application hosted on GitHub
 - Basic familiarity with command-line operations
 
@@ -89,7 +96,7 @@ pm2 startup
 Create and edit the Nginx configuration file:
 
 ```bash
-sudo nano /etc/nginx/sites-available/combohub.shop
+sudo nano /etc/nginx/sites-available/example.com
 ```
 
 Add the following configuration:
@@ -97,7 +104,7 @@ Add the following configuration:
 ```nginx
 server {
     listen 80;
-    server_name combohub.shop www.combohub.shop;
+    server_name example.com www.example.com;
     location / {
         proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
@@ -112,7 +119,7 @@ server {
 Enable the configuration:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/combohub.shop /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/example.com /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
 ```
@@ -131,7 +138,7 @@ Install Certbot and obtain an SSL certificate:
 
 ```bash
 sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d combohub.shop -d www.combohub.shop
+sudo certbot --nginx -d example.com -d www.example.com
 ```
 
 ### 9. Set Up Automatic SSL Certificate Renewal
@@ -142,15 +149,43 @@ Ensure your certificates renew automatically:
 sudo certbot renew --dry-run
 ```
 
+## Troubleshooting Common Issues
+
+To make this guide more useful, let's address some common issues you might encounter:
+
+1. **Application not starting**: Check PM2 logs using `pm2 logs your-app-name` for error messages.
+
+2. **Nginx configuration errors**: Use `sudo nginx -t` to test your configuration and identify syntax errors.
+
+3. **SSL certificate issues**: Ensure your domain's DNS is properly configured and that ports 80 and 443 are open on your VPS firewall.
+
+4. **Performance problems**: Consider optimizing your Next.js app for production and adjusting Nginx worker processes and PM2 instances.
+
+## Best Practices for Maintaining Your Deployed App
+
+1. **Regular updates**: Keep your server, Node.js, and dependencies up to date.
+2. **Monitoring**: Use tools like PM2 Monitoring or external services to track your app's performance.
+3. **Backups**: Regularly backup your application code and database.
+4. **Security**: Implement a firewall, keep your system updated, and use strong SSH keys.
+
 ## Conclusion
 
-By following this guide, you've successfully:
+By following this comprehensive guide, you've successfully:
 
 1. Deployed a Next.js application on an Ubuntu VPS
 2. Configured Nginx as a reverse proxy
 3. Used PM2 for process management
 4. Secured your site with HTTPS
 
-Your Next.js app should now be accessible at `https://combohub.shop`. Remember to regularly update your server and monitor its performance for optimal operation.
+Your Next.js app should now be accessible at `https://example.com`. Remember to regularly update your server and monitor its performance for optimal operation.
+
+We hope this guide has been helpful in your deployment journey. If you have any questions or need further clarification, feel free to leave a comment below!
 
 Happy coding, and enjoy your newly deployed Next.js application!
+
+## Additional Resources
+
+- [Next.js Documentation](https://nextjs.org/docs)
+- [Nginx Documentation](https://nginx.org/en/docs/)
+- [PM2 Documentation](https://pm2.keymetrics.io/docs/usage/quick-start/)
+- [Let's Encrypt Documentation](https://letsencrypt.org/docs/)
