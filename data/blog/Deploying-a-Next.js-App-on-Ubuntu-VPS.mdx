@@ -1,0 +1,139 @@
+---
+title: 'Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS'
+date: '2024-06-15'
+tags: ['web development', 'deployment', 'nextjs', 'ubuntu', 'nginx', 'pm2']
+layout: PostLayout
+summary: A comprehensive guide to deploying a Next.js application on an Ubuntu VPS using Nginx, PM2, and securing it with HTTPS.
+---
+
+## Introduction
+
+Deploying a Next.js application on a Virtual Private Server (VPS) can seem daunting, especially when you want to use technologies like Nginx, PM2, and HTTPS. This tutorial will guide you through the process step-by-step, using an Ubuntu 24.04.1 LTS VPS and deploying a Next.js app from a GitHub repository.
+
+## Prerequisites
+
+- A VPS running Ubuntu 24.04.1 LTS
+- A domain name (in this example, we'll use combohub.shop)
+- A Next.js application hosted on GitHub
+- Basic knowledge of command-line operations
+
+## Step 1: Prepare Your VPS
+
+First, let's update the system and install necessary packages:
+bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install git curl nginx -y
+
+## Step 2: Install Node.js and Yarn
+
+Install the latest Node.js version and Yarn:
+
+bash
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g yarn
+
+## Step 3: Clone Your GitHub Repo
+
+If your repository is public, you can clone it directly:
+
+bash
+git clone https://github.com/your-username/your-nextjs-repo.git
+cd your-nextjs-repo
+
+For a private repository, you'll need to set up SSH authentication:
+
+1. Generate an SSH key:
+   ```bash
+   ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+   ```
+2. Add the SSH key to your GitHub account:
+   - Copy the public key:
+     ```bash
+     cat ~/.ssh/id_rsa.pub
+     ```
+   - Go to GitHub > Settings > SSH and GPG keys > New SSH key
+   - Paste the key and save
+3. Clone the private repository:
+   ```bash
+   git clone git@github.com:your-username/your-private-repo.git
+   cd your-private-repo
+   ```
+
+## Step 4: Install Dependencies and Build the App
+
+Install project dependencies and build the app:
+
+bash
+yarn install
+yarn build
+
+## Step 5: Install and Configure PM2
+
+PM2 will help manage your Node.js process:
+
+bash
+sudo npm install -g pm2
+pm2 start 'yarn start' --name your-app-name
+pm2 save
+pm2 startup
+
+## Step 6: Configure Nginx
+
+Create an Nginx configuration file for your domain:
+
+bash
+sudo nano /etc/nginx/sites-available/combohub.shop
+
+Add the following configuration:
+
+nginx
+server {
+listen 80;
+server_name combohub.shop www.combohub.shop;
+location / {
+proxy_pass http://localhost:3000;
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection 'upgrade';
+proxy_set_header Host $host;
+proxy_cache_bypass $http_upgrade;
+}
+}
+
+Enable the configuration:
+
+bash
+sudo ln -s /etc/nginx/sites-available/combohub.shop /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+## Step 7: Set Up Your Domain
+
+Go to your domain registrar and create an A record that points to your VPS's public IP address. For example, if your VPS IP is 123.45.67.89, create an A record:
+
+Name: @
+Type: A
+Value: 123.45.67.89
+
+## Step 8: Set Up HTTPS with Let's Encrypt
+
+Install Certbot for Nginx and request an SSL certificate:
+
+bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d combohub.shop -d www.combohub.shop
+
+Certbot will automatically configure HTTPS for you.
+
+## Step 9: Set Up Automatic SSL Certificate Renewal
+
+Ensure your SSL certificates are automatically renewed:
+bash
+sudo certbot renew --dry-run
+
+## Conclusion
+
+Your Next.js app should now be accessible via https://combohub.shop. This setup provides a robust, secure, and scalable environment for your web application. Remember to keep your server updated and monitor its performance regularly.
+
+By following this guide, you've successfully deployed a Next.js application on an Ubuntu VPS, configured Nginx as a reverse proxy, used PM2 for process management, and secured your site with HTTPS. Happy coding!
