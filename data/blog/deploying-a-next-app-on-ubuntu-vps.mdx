@@ -1,0 +1,156 @@
+---
+title: 'Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS'
+date: '2024-09-30'
+tags: ['web development', 'deployment', 'nextjs', 'ubuntu', 'nginx', 'pm2']
+layout: PostLayout
+summary: A comprehensive guide to deploying a Next.js application on an Ubuntu VPS using Nginx, PM2, and securing it with HTTPS.
+---
+
+# Deploying a Next.js App on Ubuntu VPS with Nginx, PM2, and HTTPS
+
+## Introduction
+
+Deploying a Next.js application on a Virtual Private Server (VPS) can be a complex process, especially when incorporating technologies like Nginx, PM2, and HTTPS. This guide will walk you through each step, using an Ubuntu 24.04.1 LTS VPS to deploy a Next.js app from a GitHub repository.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- A VPS running Ubuntu 24.04.1 LTS
+- A registered domain name (we'll use `combohub.shop` in this example)
+- A Next.js application hosted on GitHub
+- Basic familiarity with command-line operations
+
+## Step-by-Step Deployment Process
+
+### 1. Prepare Your VPS
+
+Start by updating your system and installing necessary packages:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install git curl nginx -y
+```
+
+### 2. Install Node.js and Yarn
+
+Install the latest LTS version of Node.js and Yarn:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g yarn
+```
+
+### 3. Clone Your GitHub Repository
+
+For a public repository:
+
+```bash
+git clone https://github.com/your-username/your-nextjs-repo.git
+cd your-nextjs-repo
+```
+
+For a private repository:
+
+1. Generate an SSH key:
+   ```bash
+   ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+   ```
+2. Add the SSH key to your GitHub account:
+   - Copy the public key: `cat ~/.ssh/id_rsa.pub`
+   - Add it to GitHub: Settings > SSH and GPG keys > New SSH key
+3. Clone the private repository:
+   ```bash
+   git clone git@github.com:your-username/your-private-repo.git
+   cd your-private-repo
+   ```
+
+### 4. Install Dependencies and Build the App
+
+```bash
+yarn install
+yarn build
+```
+
+### 5. Set Up PM2 for Process Management
+
+Install and configure PM2:
+
+```bash
+sudo npm install -g pm2
+pm2 start 'yarn start' --name your-app-name
+pm2 save
+pm2 startup
+```
+
+### 6. Configure Nginx as a Reverse Proxy
+
+Create and edit the Nginx configuration file:
+
+```bash
+sudo nano /etc/nginx/sites-available/combohub.shop
+```
+
+Add the following configuration:
+
+```nginx
+server {
+    listen 80;
+    server_name combohub.shop www.combohub.shop;
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+Enable the configuration:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/combohub.shop /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+### 7. Configure Your Domain
+
+At your domain registrar, create an A record pointing to your VPS's public IP address:
+
+- Name: @
+- Type: A
+- Value: Your VPS IP (e.g., 123.45.67.89)
+
+### 8. Secure Your Site with HTTPS
+
+Install Certbot and obtain an SSL certificate:
+
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d combohub.shop -d www.combohub.shop
+```
+
+### 9. Set Up Automatic SSL Certificate Renewal
+
+Ensure your certificates renew automatically:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+## Conclusion
+
+By following this guide, you've successfully:
+
+1. Deployed a Next.js application on an Ubuntu VPS
+2. Configured Nginx as a reverse proxy
+3. Used PM2 for process management
+4. Secured your site with HTTPS
+
+Your Next.js app should now be accessible at `https://combohub.shop`. Remember to regularly update your server and monitor its performance for optimal operation.
+
+Happy coding, and enjoy your newly deployed Next.js application!
