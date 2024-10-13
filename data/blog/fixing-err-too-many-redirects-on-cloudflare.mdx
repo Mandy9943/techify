@@ -1,0 +1,97 @@
+---
+title: 'How to Fix ERR_TOO_MANY_REDIRECTS on Cloudflare: A Quick Guide'
+date: '2024-10-13'
+tags: ['cloudflare', 'web development', 'troubleshooting', 'ssl/tls']
+layout: PostLayout
+summary: 'Learn how to quickly resolve the ERR_TOO_MANY_REDIRECTS error on Cloudflare by adjusting your SSL/TLS encryption mode. This guide provides step-by-step instructions with screenshots to help you get your site back up and running in no time.'
+---
+
+If you've just configured your site on Cloudflare and are encountering the dreaded ERR_TOO_MANY_REDIRECTS error when trying to visit it, don't worry! This is a common issue that can be easily resolved by changing your SSL/TLS encryption mode from "Flexible" (the default setting) to "Full". In this guide, we'll walk you through the process step-by-step, complete with screenshots to help you along the way.
+
+## The Quick Fix
+
+Before we dive into the details, here's the quick solution:
+
+1. Change your SSL/TLS encryption mode from "Flexible" to "Full" in your Cloudflare settings.
+2. Wait a few seconds for the changes to take effect.
+3. Clear your browser cache.
+4. Refresh your site - it should now be working correctly!
+
+## Step-by-Step Guide
+
+Let's go through the process in more detail:
+
+### Step 1: Log in to Cloudflare Dashboard
+
+Visit [https://dash.cloudflare.com/](https://dash.cloudflare.com/) and log in to your account.
+
+![Cloudflare Login Page](/static/images/cloudflare-dashboard.png)
+
+### Step 2: Select Your Domain
+
+On the Websites tab, click on the domain you're having issues with.
+
+![Select Domain](/static/images/cloudflare-select-domain.jpg)
+
+### Step 3: Navigate to SSL/TLS Settings
+
+In the left sidebar, click on the "SSL/TLS" tab.
+
+![SSL/TLS Tab](/static/images/cloudflare-ssl-tls-tab.jpg)
+
+### Step 4: Configure SSL/TLS Encryption
+
+Under "SSL/TLS encryption", click on "Configure".
+
+![Configure SSL/TLS](/static/images/cloudflare-configure-ssl-tls.jpg)
+
+### Step 5: Select Full Encryption Mode
+
+In the encryption mode options, select "Full".
+
+![Select Full Encryption](/static/images/cloudflare-select-full.jpg)
+
+### Step 6: Save Changes
+
+Click "Save" to apply your new settings.
+
+![Save Changes](/static/images/cloudflare-save-changes.jpg)
+
+After completing these steps, wait a few seconds for the changes to propagate. Then, clear your browser cache and try accessing your site again. The ERR_TOO_MANY_REDIRECTS error should now be resolved!
+
+## Why This Works: Understanding Encryption Mode Misconfigurations
+
+The ERR_TOO_MANY_REDIRECTS error often occurs due to a mismatch between your Cloudflare SSL/TLS settings and your origin server configuration. Let's break down why this happens and how changing the encryption mode fixes it.
+
+### Flexible Encryption Mode
+
+By default, Cloudflare sets the SSL/TLS encryption mode to "Flexible". In this mode:
+
+1. Cloudflare accepts HTTPS connections from visitors.
+2. Cloudflare then connects to your origin server using HTTP (unencrypted).
+
+This can cause problems if your origin server is configured to automatically redirect all HTTP requests to HTTPS. The result is an endless loop of redirects:
+
+1. User requests `https://example.com`
+2. Cloudflare sends request to origin as `http://example.com`
+3. Origin server redirects to `https://example.com`
+4. Process repeats, resulting in ERR_TOO_MANY_REDIRECTS
+
+### Full Encryption Mode
+
+By changing the encryption mode to "Full":
+
+1. Cloudflare accepts HTTPS connections from visitors.
+2. Cloudflare connects to your origin server using HTTPS (encrypted).
+
+This breaks the redirect loop because your origin server receives the request over HTTPS, which it doesn't need to redirect.
+
+## Additional Tips
+
+- If changing to "Full" encryption mode doesn't solve the issue, ensure your origin server isn't configured to redirect HTTPS to HTTP.
+- The "Full (strict)" mode is even more secure but requires a valid SSL certificate on your origin server.
+- Always keep your origin server and Cloudflare configurations in sync to avoid similar issues in the future.
+
+By following this guide, you should now have your site working correctly through Cloudflare. Remember, proper SSL/TLS configuration is crucial for both security and functionality. If you encounter any other issues or have questions, don't hesitate to consult Cloudflare's documentation or reach out to their support team.
+
+Happy hosting!
