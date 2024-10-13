@@ -48,7 +48,6 @@ export async function generateMetadata({
       url: img.includes('http') ? img : siteMetadata.siteUrl + img,
     }
   })
-  console.log(post)
 
   return {
     title: post.title,
@@ -69,7 +68,7 @@ export async function generateMetadata({
       card: 'summary_large_image',
       title: post.title,
       description: post.summary,
-      images: imageList,
+      images: ogImages,
     },
   }
 }
