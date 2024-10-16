@@ -1,6 +1,6 @@
 {
   "2024": 2,
-  "web-development": 4,
+  "web-development": 3,
   "nextjs": 1,
   "ubuntu": 1,
   "nginx": 1,
@@ -8,8 +8,5 @@
   "https": 1,
   "vps": 1,
   "ai": 1,
-  "tools": 1,
-  "cloudflare": 1,
-  "troubleshooting": 1,
-  "ssltls": 1
+  "tools": 1
 }
