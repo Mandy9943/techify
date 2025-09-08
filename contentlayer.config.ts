@@ -1,28 +1,28 @@
-import { defineDocumentType, ComputedFields, makeSource } from 'contentlayer2/source-files'
+import { ComputedFields, defineDocumentType, makeSource } from 'contentlayer2/source-files'
 import { writeFileSync } from 'fs'
-import readingTime from 'reading-time'
 import { slug } from 'github-slugger'
-import path from 'path'
 import { fromHtmlIsomorphic } from 'hast-util-from-html-isomorphic'
+import path from 'path'
+import readingTime from 'reading-time'
 // Remark packages
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import { remarkAlert } from 'remark-github-blockquote-alert'
 import {
-  remarkExtractFrontmatter,
-  remarkCodeTitles,
-  remarkImgToJsx,
   extractTocHeadings,
+  remarkCodeTitles,
+  remarkExtractFrontmatter,
+  remarkImgToJsx,
 } from 'pliny/mdx-plugins/index.js'
+import remarkGfm from 'remark-gfm'
+import { remarkAlert } from 'remark-github-blockquote-alert'
+import remarkMath from 'remark-math'
 // Rehype packages
-import rehypeSlug from 'rehype-slug'
-import rehypeAutolinkHeadings from 'rehype-autolink-headings'
-import rehypeKatex from 'rehype-katex'
-import rehypeCitation from 'rehype-citation'
-import rehypePrismPlus from 'rehype-prism-plus'
-import rehypePresetMinify from 'rehype-preset-minify'
-import siteMetadata from './data/siteMetadata'
 import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer.js'
+import rehypeAutolinkHeadings from 'rehype-autolink-headings'
+import rehypeCitation from 'rehype-citation'
+import rehypeKatex from 'rehype-katex'
+import rehypePresetMinify from 'rehype-preset-minify'
+import rehypePrismPlus from 'rehype-prism-plus'
+import rehypeSlug from 'rehype-slug'
+import siteMetadata from './data/siteMetadata'
 
 const root = process.cwd()
 const isProduction = process.env.NODE_ENV === 'production'
@@ -115,11 +115,46 @@ export const Blog = defineDocumentType(() => ({
         '@context': 'https://schema.org',
         '@type': 'BlogPosting',
         headline: doc.title,
+        name: doc.title,
+        description: doc.summary,
         datePublished: doc.date,
         dateModified: doc.lastmod || doc.date,
-        description: doc.summary,
-        image: doc.images ? doc.images[0] : siteMetadata.socialBanner,
         url: `${siteMetadata.siteUrl}/${doc._raw.flattenedPath}`,
+        mainEntityOfPage: `${siteMetadata.siteUrl}/${doc._raw.flattenedPath}`,
+        image:
+          Array.isArray(doc.images) && doc.images.length > 0
+            ? doc.images.map((img) =>
+                img.startsWith('http') ? img : `${siteMetadata.siteUrl}${img}`
+              )
+            : [siteMetadata.socialBanner],
+        keywords: Array.isArray(doc.tags) ? doc.tags.join(', ') : undefined,
+        publisher: {
+          '@type': 'Organization',
+          name: siteMetadata.title,
+          logo: {
+            '@type': 'ImageObject',
+            url: `${siteMetadata.siteUrl}${siteMetadata.siteLogo}`,
+          },
+        },
+        // Recompute reading metrics for schema additions
+        wordCount: (() => {
+          try {
+            return doc.body.raw.split(/\s+/).filter(Boolean).length
+          } catch {
+            return undefined
+          }
+        })(),
+        timeRequired: (() => {
+          try {
+            const words = doc.body.raw.split(/\s+/).filter(Boolean).length
+            const minutes = Math.max(1, Math.round(words / 200))
+            return `PT${minutes}M`
+          } catch {
+            return undefined
+          }
+        })(),
+        articleSection: doc.tags && doc.tags.length > 0 ? doc.tags[0] : undefined,
+        isAccessibleForFree: true,
       }),
     },
   },

@@ -16,6 +16,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
     url: `${siteUrl}/${route}`,
     lastModified: new Date().toISOString().split('T')[0],
   }))
+  // Add about page explicitly
+  routes.push({
+    url: `${siteUrl}/about`,
+    lastModified: new Date().toISOString().split('T')[0],
+  })
 
   return [...routes, ...blogRoutes]
 }
