@@ -1,0 +1,187 @@
+---
+title: 'Step-by-Step Guide: Setting Up Persistent Cloudflare Tunnels for Multiple Local Ports'
+date: '2025-10-14'
+tags: ['cloudflare', 'tunnels', 'networking', 'web development', 'ubuntu', 'devops', 'security']
+draft: false
+layout: PostLayout
+summary: 'Discover how to create secure, persistent Cloudflare tunnels to expose multiple local services like development servers on different ports. This detailed tutorial covers setup, configuration for multiple ingress rules, DNS routing, and running as a background service on Ubuntu.'
+---
+
+Exposing local development servers or services to the internet can be tricky, especially when you need persistent URLs without constantly restarting tunnels. Cloudflare Tunnels provide a secure way to achieve this, giving you proper **HTTPS URLs** (like `https://myapp.example.com`) without opening ports on your firewall or dealing with dynamic IPs. In this guide, we'll show you how to set up a single named tunnel that can handle one or multiple local ports (e.g., 3000, 3001, or just a single port) using ingress rules, ensuring everything runs persistently via systemd on an Ubuntu system.
+
+By the end of this tutorial, you'll be able to access your local service running at `http://localhost:3000` from anywhere in the world via a secure HTTPS URL like `https://myapp.example.com` - perfect for testing, sharing with clients, or running production previews.
+
+## Why Use Cloudflare Tunnels?
+
+Cloudflare Tunnels offer several advantages over traditional methods like port forwarding or temporary proxies:
+
+1. **HTTPS URLs Out of the Box**: Get proper HTTPS URLs (e.g., `https://myapp.example.com`) automatically, with SSL certificates managed by Cloudflare.
+2. **Security**: Traffic is encrypted end-to-end, and you don't expose your local machine directly to the internet.
+3. **Persistence**: Named tunnels provide fixed URLs, unlike ephemeral ones that change on every run.
+4. **Ease of Use**: No need for public IPs or firewall changes; works behind NAT.
+5. **Scalability**: Easily handle one or multiple services with a single tunnel process, reducing resource usage.
+6. **Free Tier**: Basic functionality is available on Cloudflare's free plan.
+
+This approach is ideal for developers running one or more apps locally, such as a single Next.js server or multiple services on different ports.
+
+## Prerequisites
+
+Before starting, ensure you have:
+
+- A free Cloudflare account (sign up at [dashboard.cloudflare.com](https://dash.cloudflare.com/)).
+- A domain added to Cloudflare with DNS managed there (we'll use `example.com` in examples).
+- `cloudflared` installed on your Ubuntu machine (download from [developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads)).
+- Basic command-line knowledge.
+- Sudo access on your system.
+
+## Step-by-Step Guide to Setting Up Cloudflare Tunnels
+
+We'll create one tunnel and configure it to route traffic to your local port(s). This works whether you have a single service or multiple services running on different ports.
+
+### Step 1: Authenticate cloudflared
+
+Authenticate your `cloudflared` CLI with Cloudflare to generate a certificate:
+
+```bash
+cloudflared tunnel login
+```
+
+This opens a browser window. Log in, select your domain, and authorize. It creates `~/.cloudflared/cert.pem`.
+
+![Authenticate Cloudflared](/static/images/cloudflare-authenticate.png)
+
+### Step 2: Create a Named Tunnel
+
+Create a tunnel with a descriptive name, like `multi-port-tunnel`:
+
+```bash
+cloudflared tunnel create multi-port-tunnel
+```
+
+This outputs a UUID (e.g., `abc123-uuid`) and creates `~/.cloudflared/<UUID>.json`. Verify with:
+
+```bash
+cloudflared tunnel list
+```
+
+![Create Tunnel](/static/images/cloudflare-create-tunnel.png)
+
+### Step 3: Set Up DNS Records in Cloudflare
+
+In your Cloudflare dashboard:
+
+1. Go to DNS > Records.
+2. Add CNAME records for each service:
+   - Name: `tunnel3000`, Target: `<UUID>.cfargotunnel.com`
+   - Name: `tunnel3001`, Target: `<UUID>.cfargotunnel.com`
+3. Ensure Proxy status is "Proxied" (orange cloud icon).
+
+Alternatively, use the CLI:
+
+```bash
+cloudflared tunnel route dns multi-port-tunnel tunnel3000
+cloudflared tunnel route dns multi-port-tunnel tunnel3001
+```
+
+Replace with your subdomains (e.g., `tunnel3000.example.com`).
+
+![DNS Records](/static/images/cloudflare-dns-records.png)
+
+### Step 4: Create the Configuration File with Ingress Rules
+
+In `~/.cloudflared`, create `config.yml`:
+
+```yaml
+tunnel: <UUID> # Replace with your tunnel UUID
+credentials-file: ~/.cloudflared/<UUID>.json
+
+ingress:
+  - hostname: tunnel3000.example.com
+    service: http://localhost:3000
+  - hostname: tunnel3001.example.com
+    service: http://localhost:3001
+  - service: http_status:404 # Fallback for unmatched traffic
+```
+
+This routes traffic based on the hostname to the correct local port.
+
+![Config File](/static/images/cloudflare-config-file.png)
+
+### Step 5: Test the Tunnel
+
+Run the tunnel to verify:
+
+```bash
+cloudflared tunnel --config ~/.cloudflared/config.yml run
+```
+
+Access `https://tunnel3000.example.com` (should point to localhost:3000) and `https://tunnel3001.example.com` (to localhost:3001).
+
+### Step 6: Make the Tunnel Persistent with systemd
+
+To run it as a background service:
+
+Create `/etc/systemd/system/cloudflared.service`:
+
+```ini
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/yourusername/.cloudflared/config.yml run
+Restart=always
+User=yourusername  # Replace with your user, e.g., ubuntu or cesar
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Adjust paths (use `which cloudflared` to confirm binary location).
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+sudo systemctl status cloudflared  # Check for errors
+```
+
+Monitor logs with `journalctl -u cloudflared -f`.
+
+![Systemd Service](/static/images/cloudflare-systemd-service.png)
+
+## Troubleshooting Common Issues
+
+1. **Tunnel Not Starting**: Check `config.yml` for syntax errors. Use `cloudflared tunnel --config config.yml run` in foreground for logs.
+2. **DNS Propagation**: Wait a few minutes or flush DNS cache (`sudo systemd-resolve --flush-caches`).
+3. **Permission Errors**: Ensure `~/.cloudflared` files are owned by your user (`chown -R yourusername ~/.cloudflared`).
+4. **Connection Refused**: Verify local services are running on the specified ports.
+5. **Certificate Issues**: Re-run `cloudflared tunnel login` if authentication expires.
+
+If issues persist, check Cloudflare's dashboard for tunnel status.
+
+## Best Practices for Cloudflare Tunnels
+
+1. **Security First**: Use Cloudflare Access policies for authentication if exposing sensitive services.
+2. **Monitoring**: Set up Cloudflare analytics to track tunnel traffic.
+3. **Backups**: Regularly back up your config files and credentials.
+4. **Updates**: Keep `cloudflared` updated for security patches.
+5. **Single Tunnel Preference**: Consolidate services into one tunnel to minimize processes and complexity.
+6. **Domain Management**: Use subdomains for organization and easy scaling.
+
+## Conclusion
+
+You've now set up a persistent Cloudflare tunnel that securely exposes multiple local ports via fixed URLs. This setup is efficient, secure, and scalable for development or testing needs.
+
+If you run into any hurdles or want to expand to more advanced features like load balancing, check the resources below. Feel free to share your experiences in the comments!
+
+Happy tunneling!
+
+## Additional Resources
+
+- [Cloudflare Tunnel Documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+- [cloudflared CLI Reference](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/local-management/tunnel-useful-commands/)
+- [Systemd Service Guide](https://www.freedesktop.org/software/systemd/man/systemd.service.html)
+- [Cloudflare DNS Management](https://developers.cloudflare.com/dns/manage-dns-records/)
