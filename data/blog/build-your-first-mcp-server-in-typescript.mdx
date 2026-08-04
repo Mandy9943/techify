@@ -1,0 +1,450 @@
+---
+title: 'Build Your First MCP Server in TypeScript: Give Claude Real-Time Superpowers'
+date: '2026-08-03'
+tags:
+  [
+    'typescript',
+    'mcp',
+    'ai-agents',
+    'claude',
+    'nodejs',
+    'model-context-protocol',
+    'tutorial',
+    'zod',
+  ]
+layout: PostLayout
+summary: 'Learn how to build a Model Context Protocol (MCP) server in TypeScript using the new v2 SDK. Step-by-step tutorial: expose Hacker News data as tools, test with the MCP Inspector, and connect it to Claude Desktop and Cursor. Every snippet is real, tested code.'
+---
+
+# Build Your First MCP Server in TypeScript
+
+Large language models are frozen in time. Ask Claude what's trending on Hacker News right now and it simply can't tell you — its training data ended months ago, and it has no way to reach the outside world.
+
+Unless you give it one.
+
+The **Model Context Protocol (MCP)** is the open standard that solves this. Think of it as **USB-C for AI applications**: one protocol that lets any AI client (Claude Desktop, Claude Code, Cursor, VS Code, and many more) plug into any data source or tool you can code. Anthropic open-sourced it in late 2024, OpenAI and Google adopted it in 2025, and today there are thousands of community servers for everything from Postgres to Ghidra.
+
+In this tutorial we'll build a real MCP server in TypeScript that gives your AI assistant live access to Hacker News. By the end you'll be able to ask Claude things like *"what's trending on HN about Rust?"* and get answers backed by live data.
+
+Everything below is **actual tested code** — I built this server, ran every tool against the live API, and pasted the real outputs. No pseudocode.
+
+> [!NOTE]
+> We're using the **v2 TypeScript SDK** (`@modelcontextprotocol/server`), released as stable in 2026. Most older tutorials use the v1 `@modelcontextprotocol/sdk` package — the concepts are identical, but the API is cleaner now. If you're starting fresh, start with v2.
+
+---
+
+## What's in an MCP Server?
+
+An MCP server can expose three kinds of capabilities:
+
+1. **Tools** — functions the model can call (`get_top_stories`, `run_query`, `send_email`). This is the big one.
+2. **Resources** — read-only data the client can load into context (files, schemas, docs).
+3. **Prompts** — reusable prompt templates the user can invoke.
+
+And it talks to clients over one of two **transports**:
+
+- **stdio** — the client spawns your server as a child process and talks JSON-RPC over stdin/stdout. Perfect for local servers. This is what we'll use.
+- **Streamable HTTP** — your server runs remotely behind a URL. Same protocol, different plumbing.
+
+The flow looks like this:
+
+```
+Claude Desktop / Cursor          Your MCP server              Hacker News API
+        │                              │                            │
+        │  1. spawn + handshake        │                            │
+        │ ───────────────────────────► │                            │
+        │  2. tools/list               │                            │
+        │ ───────────────────────────► │                            │
+        │  3. user asks a question     │                            │
+        │  4. tools/call get_top_...   │                            │
+        │ ───────────────────────────► │  5. fetch()                │
+        │                              │ ─────────────────────────► │
+        │  6. formatted results        │                            │
+        │ ◄─────────────────────────── │                            │
+        │  7. model writes the answer  │                            │
+```
+
+The model never talks to the API directly — it decides *which* tool to call and with *what* arguments, your server does the actual work.
+
+## Why Hacker News?
+
+The [official HN API](https://github.com/HackerNews/API) is public, free, and needs **no API key**, so you can follow along with zero setup. We'll also use the [Algolia HN Search API](https://hn.algolia.com/api) for keyword search. Together they let us build three genuinely useful tools:
+
+- `get_top_stories` — what's on the front page right now
+- `search_stories` — find discussions about any topic
+- `get_story_comments` — read what people are saying
+
+## Project Setup
+
+Create the project and install dependencies:
+
+```bash
+mkdir hn-mcp && cd hn-mcp
+pnpm init
+pnpm add @modelcontextprotocol/server zod
+pnpm add -D typescript tsx @types/node
+```
+
+Set `"type": "module"` in your `package.json` and add these scripts:
+
+```json:package.json
+{
+  "name": "hn-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": { "hn-mcp": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  }
+}
+```
+
+And a minimal `tsconfig.json`:
+
+```json:tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+```
+
+## Step 1: A Thin API Client
+
+Keep the HTTP plumbing separate from the MCP logic. Create `src/hn-api.ts`:
+
+```typescript:src/hn-api.ts
+const HN_API = 'https://hacker-news.firebaseio.com/v0'
+const ALGOLIA_API = 'https://hn.algolia.com/api/v1'
+
+export interface HNItem {
+  id: number
+  by?: string
+  title?: string
+  url?: string
+  score?: number
+  descendants?: number // total comment count
+  text?: string
+  kids?: number[] // ids of top-level comments
+}
+
+export interface SearchHit {
+  objectID: string
+  title: string
+  url: string | null
+  author: string
+  points: number
+  num_comments: number
+  created_at: string
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from ${url}`)
+  }
+  return (await res.json()) as T
+}
+
+export async function getTopStoryIds(): Promise<number[]> {
+  return fetchJson<number[]>(`${HN_API}/topstories.json`)
+}
+
+export async function getItem(id: number): Promise<HNItem | null> {
+  return fetchJson<HNItem | null>(`${HN_API}/item/${id}.json`)
+}
+
+export async function searchStories(query: string, count: number): Promise<SearchHit[]> {
+  const params = new URLSearchParams({
+    query,
+    tags: 'story',
+    hitsPerPage: String(count),
+  })
+  const data = await fetchJson<{ hits: SearchHit[] }>(`${ALGOLIA_API}/search?${params}`)
+  return data.hits
+}
+
+export function formatStory(item: HNItem, rank?: number): string {
+  const prefix = rank !== undefined ? `${rank}. ` : ''
+  return [
+    `${prefix}${item.title ?? '(untitled)'}`,
+    `   ${item.score ?? 0} points by ${item.by ?? 'unknown'} | ${item.descendants ?? 0} comments`,
+    `   Link: ${item.url ?? `https://news.ycombinator.com/item?id=${item.id}`}`,
+    `   Discussion: https://news.ycombinator.com/item?id=${item.id} (id: ${item.id})`,
+  ].join('\n')
+}
+```
+
+Notice `formatStory` returns **plain readable text, not JSON**. Tool results are consumed by a language model — a compact, human-readable format is easier for the model to reason about and cheaper in tokens than a wall of JSON. We also always include the numeric story `id`, because our comments tool will need it. Think of tool output as *prompt engineering*: you're writing for the model.
+
+## Step 2: The MCP Server
+
+Now the interesting part. Create `src/index.ts`:
+
+```typescript:src/index.ts
+import { McpServer } from '@modelcontextprotocol/server'
+import { serveStdio } from '@modelcontextprotocol/server/stdio'
+import * as z from 'zod/v4'
+import { formatStory, getItem, getTopStoryIds, searchStories } from './hn-api.js'
+
+function createServer(): McpServer {
+  const server = new McpServer({ name: 'hacker-news', version: '1.0.0' })
+
+  server.registerTool(
+    'get_top_stories',
+    {
+      description:
+        'Get the current top stories on Hacker News, with title, score, author, comment count and links.',
+      inputSchema: z.object({
+        count: z.number().int().min(1).max(30).default(10)
+          .describe('How many top stories to return (1-30, default 10)'),
+      }),
+    },
+    async ({ count }) => {
+      try {
+        const ids = await getTopStoryIds()
+        const items = await Promise.all(ids.slice(0, count).map(getItem))
+        const stories = items
+          .filter((item) => item !== null)
+          .map((item, i) => formatStory(item, i + 1))
+        return { content: [{ type: 'text', text: stories.join('\n\n') }] }
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Failed to fetch top stories: ${error}` }],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  server.registerTool(
+    'search_stories',
+    {
+      description:
+        'Search Hacker News stories by keyword, sorted by relevance. Useful for finding discussions about a specific technology or topic.',
+      inputSchema: z.object({
+        query: z.string().min(1).describe('Search terms, e.g. "rust async" or "postgres"'),
+        count: z.number().int().min(1).max(30).default(10)
+          .describe('How many results to return (1-30, default 10)'),
+      }),
+    },
+    async ({ query, count }) => {
+      try {
+        const hits = await searchStories(query, count)
+        if (hits.length === 0) {
+          return { content: [{ type: 'text', text: `No stories found for "${query}".` }] }
+        }
+        const lines = hits.map((hit, i) =>
+          [
+            `${i + 1}. ${hit.title}`,
+            `   ${hit.points} points by ${hit.author} | ${hit.num_comments} comments | ${hit.created_at.slice(0, 10)}`,
+            `   Link: ${hit.url ?? `https://news.ycombinator.com/item?id=${hit.objectID}`}`,
+            `   Discussion: https://news.ycombinator.com/item?id=${hit.objectID} (id: ${hit.objectID})`,
+          ].join('\n')
+        )
+        return { content: [{ type: 'text', text: lines.join('\n\n') }] }
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Search failed: ${error}` }],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  server.registerTool(
+    'get_story_comments',
+    {
+      description:
+        'Get the top-level comments of a Hacker News story by its numeric id. Use get_top_stories or search_stories first to find the id.',
+      inputSchema: z.object({
+        storyId: z.number().int().positive().describe('Numeric HN story id, e.g. 8863'),
+        count: z.number().int().min(1).max(20).default(5)
+          .describe('How many top-level comments to return (1-20, default 5)'),
+      }),
+    },
+    async ({ storyId, count }) => {
+      try {
+        const story = await getItem(storyId)
+        if (!story) {
+          return {
+            content: [{ type: 'text', text: `No story found with id ${storyId}.` }],
+            isError: true,
+          }
+        }
+        const commentIds = (story.kids ?? []).slice(0, count)
+        const comments = await Promise.all(commentIds.map(getItem))
+        const formatted = comments
+          .filter((c) => c !== null && !!c.text)
+          .map((c, i) => `${i + 1}. ${c!.by ?? 'unknown'}: ${stripHtml(c!.text!)}`)
+        const header = `Comments on "${story.title}" (${story.descendants ?? 0} total):`
+        if (formatted.length === 0) {
+          return { content: [{ type: 'text', text: `${header}\n(no comments yet)` }] }
+        }
+        return { content: [{ type: 'text', text: `${header}\n\n${formatted.join('\n\n')}` }] }
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Failed to fetch comments: ${error}` }],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  return server
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<p>/g, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
+serveStdio(createServer)
+```
+
+That's the whole server. Let's unpack the key decisions:
+
+**Zod schemas are doing triple duty.** Each `inputSchema` (1) generates the JSON Schema the client shows the model, (2) validates incoming arguments at runtime before your handler runs, and (3) gives you fully typed handler parameters. The `.describe()` calls aren't decoration — they're documentation *for the model*, and they directly affect how well it uses your tools.
+
+**Errors are returned, not thrown.** Returning `isError: true` with a clear message sends the failure *to the model*, which can then react — retry with different arguments, tell the user, or try another tool. An unhandled throw just produces a generic protocol error. Write error messages the way you'd write them for a junior developer: say what went wrong and what to do instead.
+
+**Tool descriptions teach the workflow.** Note how `get_story_comments` says *"Use get_top_stories or search_stories first to find the id."* The model reads this and chains the tools correctly on its own.
+
+> [!WARNING]
+> One classic stdio gotcha: **never `console.log` in an stdio server.** Stdout is the protocol channel — any stray print corrupts the JSON-RPC stream. Use `console.error` for debugging; stderr is free.
+
+## Step 3: Test It with the MCP Inspector
+
+Before touching any AI client, verify the server speaks MCP correctly. The official **MCP Inspector** has a CLI mode that's perfect for this:
+
+```bash
+pnpm build
+npx @modelcontextprotocol/inspector --cli node dist/index.js --method tools/list
+```
+
+Real output from our server:
+
+```json
+{
+  "tools": [
+    {
+      "name": "get_top_stories",
+      "description": "Get the current top stories on Hacker News, with title, score, author, comment count and links.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "default": 10,
+            "description": "How many top stories to return (1-30, default 10)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
+          }
+        }
+      }
+    }
+    // ...search_stories and get_story_comments
+  ]
+}
+```
+
+Our Zod schemas were converted to JSON Schema automatically — constraints, defaults, descriptions and all. You can also run `npx @modelcontextprotocol/inspector node dist/index.js` without `--cli` to get a web UI where you can call tools interactively.
+
+Here's what a real `get_top_stories` call returned when I tested it:
+
+```
+1. LLMs reward expertise
+   427 points by MaxMussio | 189 comments
+   Link: https://www.seangoedecke.com/llms-reward-expertise/
+   Discussion: https://news.ycombinator.com/item?id=49161518 (id: 49161518)
+
+2. Ten advances in mathematics and theoretical computer science
+   428 points by milkshakes | 709 comments
+   Link: https://openai.com/index/ten-advances-in-mathematics/
+   Discussion: https://news.ycombinator.com/item?id=49157930 (id: 49157930)
+...
+```
+
+And a fun one — asking for the comments of story `8863` (Dropbox's original 2007 "Show HN") returns the famously skeptical top comment:
+
+```
+Comments on "My YC app: Dropbox - Throw away your USB drive" (71 total):
+
+1. BrandonM: I have a few qualms with this app: 1. For a Linux user, you can
+   already build such a system yourself quite trivially by getting an FTP
+   account, mounting it locally with curlftpfs, and then using SVN or CVS...
+```
+
+Live data, fetched by your own MCP server. Now let's plug it into a real client.
+
+## Step 4: Connect It to Claude Desktop, Claude Code and Cursor
+
+**Claude Desktop** — edit the config file (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json:claude_desktop_config.json
+{
+  "mcpServers": {
+    "hacker-news": {
+      "command": "node",
+      "args": ["/absolute/path/to/hn-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop, and you'll see the tools available under the tools icon. Ask *"What's on the front page of Hacker News?"* and watch it call your server.
+
+**Claude Code** — one command:
+
+```bash
+claude mcp add hacker-news -- node /absolute/path/to/hn-mcp/dist/index.js
+```
+
+**Cursor** — create `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` globally):
+
+```json:.cursor/mcp.json
+{
+  "mcpServers": {
+    "hacker-news": {
+      "command": "node",
+      "args": ["/absolute/path/to/hn-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Use absolute paths — these clients don't run from your project directory.
+
+## Best Practices Worth Internalizing
+
+1. **Write descriptions for the model, not for docs.** Tool and parameter descriptions are the model's only manual. Be specific, include examples (`e.g. "rust async"`), and describe workflows across tools.
+2. **Return text the model can reason about.** Formatted, ranked, compact — not raw API JSON dumps. Your context window (and wallet) will thank you.
+3. **Bound everything.** Our `count` params are capped (`max(30)`). Never let a tool return unbounded output — a model happily asking for 500 stories can blow the context window.
+4. **Fail loudly and helpfully.** `isError: true` plus a message that tells the model what to do next.
+5. **Validate at the edge.** Zod rejects bad arguments before your handler runs — one less class of bugs.
+6. **Keep secrets out of tool output.** Whatever your server returns goes straight into the model's context, and potentially into logs. If your server wraps a private API, return only what's needed.
+
+## Where to Go from Here
+
+- **Remote servers**: swap `serveStdio` for the Streamable HTTP transport and deploy your server behind a URL that any client (including claude.ai) can use.
+- **Resources & prompts**: expose your API docs as resources, or ship a canned "summarize today's HN" prompt.
+- **Your own data**: the pattern you just learned — thin API client + `registerTool` + Zod schemas + readable output — applies unchanged to your Postgres database, your company's internal API, or your home automation.
+
+The full spec, SDKs for other languages, and a large registry of existing servers live at [modelcontextprotocol.io](https://modelcontextprotocol.io).
+
+The gap between "an LLM that talks" and "an agent that does" is exactly one well-designed MCP server. Now you know how to build one.
