@@ -1,0 +1,409 @@
+---
+title: 'Multi-Agent Strategies: How to Actually Split Work Across AI Agents'
+date: '2026-08-15'
+tags:
+  [
+    'ai-agents',
+    'multi-agent',
+    'orchestration',
+    'context-engineering',
+    'claude',
+    'ai',
+    'architecture',
+    'llm',
+  ]
+layout: PostLayout
+summary: 'A practical field guide to multi-agent work: the five topologies (orchestrator-worker, pipeline, peer team, scripted workflow), the patterns that actually pay off, the failure modes that burn tokens, and real numbers on what parallelism costs. With runnable Claude Code configs.'
+---
+
+# Multi-Agent Strategies: How to Actually Split Work Across AI Agents
+
+There is a genuine disagreement at the center of this topic, and pretending otherwise makes for bad advice.
+
+On one side: Anthropic published that their Research feature — a lead agent that spawns parallel subagents — **outperformed a single-agent Claude Opus 4 by 90.2%** on their internal research evaluation. On the other: Cognition published an essay literally titled _"Don't Build Multi-Agents"_, arguing that splitting work across agents produces fragile systems because context doesn't travel between them.
+
+Both are right. They're describing different task shapes.
+
+This article is about telling those shapes apart, and about the concrete patterns that work once you've picked correctly. Everything here is drawn from published engineering write-ups and current product documentation, with the numbers attributed at the end.
+
+---
+
+## The one question that decides everything
+
+Before topologies, before frameworks, before any config file:
+
+> **Does the work split into parts that don't need to know about each other?**
+
+That's it. Read carefully, because the failure mode hides in the word _"need."_
+
+**Reading parallelizes. Writing doesn't.**
+
+Researching five libraries splits cleanly — findings about library A don't change how you read library B's docs. Auditing forty route handlers for missing auth splits cleanly. Reviewing a PR through a security lens and a performance lens splits cleanly.
+
+Building a feature does _not_ split cleanly. This is Cognition's argument, and their example is worth internalizing. Ask two subagents to build a Flappy Bird clone in parallel — one does the background, one does the bird — and you get a Super Mario background with a bird that doesn't match it. Neither agent saw the other's implicit design decisions. The output is two halves of two different games.
+
+The decision rule that follows:
+
+| Signal                                                                                  | Go multi-agent | Stay single-agent |
+| :-------------------------------------------------------------------------------------- | :------------- | :---------------- |
+| Work is mostly **reading** (search, audit, research, review)                            | ✅             |                   |
+| Work is mostly **writing** to shared state (a feature, a refactor across coupled files) |                | ✅                |
+| Subtasks would produce **implicit decisions** others must honor                         |                | ✅                |
+| Total information exceeds one context window                                            | ✅             |                   |
+| Steps are **sequential** — each needs the previous result                               |                | ✅                |
+| You want **independent verification** of a conclusion                                   | ✅             |                   |
+| Latency matters more than thoroughness                                                  |                | ✅                |
+
+> [!NOTE]
+> There's a third option people skip: **one agent, isolated helpers**. A single agent that keeps the plan, but delegates verbose side tasks (running the test suite, reading a 10k-line log) to helpers that return only a summary. This gets you most of the context benefit with none of the coordination risk. It's the highest-ROI multi-agent pattern, and it barely feels like one.
+
+---
+
+## The five topologies
+
+### 1. Single agent with tools (the baseline you must beat)
+
+```
+   You ──► Agent ──► tools ──► Agent ──► answer
+             ↑________________│
+              (loop until done)
+```
+
+Full context, no coordination overhead, cheapest, easiest to debug. Every other topology has to justify itself against this one. Most don't.
+
+### 2. Orchestrator–worker (fan-out / fan-in)
+
+```
+                    ┌──► Worker A ──┐
+   You ──► Lead ────┼──► Worker B ──┼──► Lead ──► answer
+          (plans)   └──► Worker C ──┘  (synthesizes)
+```
+
+A lead agent decomposes the task, spawns workers with their own context windows, and reconciles what comes back. Workers never talk to each other; they report upward.
+
+This is the architecture behind Anthropic's Research feature. The lead plans and saves the plan to memory (so a context overflow doesn't lose it), spawns 3–5 subagents in parallel, each with its own context and tools, and each worker acts as an **intelligent filter** — it may read a hundred sources and return two paragraphs. That filtering is the whole point: the system processes far more information than fits in one context window, because most of it is discarded before it reaches the lead.
+
+Anthropic ran Opus as the lead and Sonnet as the workers. That asymmetry is deliberate — planning and synthesis are the hard parts; the workers mostly search and compress.
+
+**Best for:** breadth-first research, codebase-wide audits, multi-lens review.
+
+### 3. Pipeline (chained specialists)
+
+```
+   You ──► Research ──► Outline ──► Draft ──► Critique ──► Revise ──► out
+```
+
+Each stage transforms the previous stage's output. Deterministic, easy to reason about, easy to eval stage by stage. The variant worth knowing is the **evaluator–optimizer loop**: a producer agent and a critic agent in a `while` loop, stopping when the critic passes the output or progress stalls.
+
+**Best for:** content generation, code-fix-until-green, anything with a clear quality bar.
+
+### 4. Peer team (shared task list + messaging)
+
+```
+        ┌──────── shared task list ────────┐
+        │                                  │
+   Teammate A ◄────── messages ──────► Teammate B
+        ▲                                  ▲
+        └──────────── Lead ────────────────┘
+```
+
+Unlike orchestrator–worker, peers message _each other_ directly and self-claim work from a shared list. This buys you something fan-out can't: **debate**.
+
+The killer application is competing hypotheses. A single agent investigating a bug finds one plausible explanation and stops — classic anchoring. Five peers each assigned a different hypothesis, explicitly instructed to disprove each other, converge on something much more likely to be the actual root cause. The adversarial structure is the mechanism, not the parallelism.
+
+**Best for:** debugging with unclear root cause, design exploration, cross-layer work where each peer owns a layer.
+
+**Cost:** the highest of any topology. Every peer is a full agent session with its own context window.
+
+### 5. Scripted workflow (code holds the plan)
+
+```
+   script:
+     phase("discover") → agent()          // 1 agent
+     phase("audit")    → pipeline(files)  // N agents, one per file
+     phase("verify")   → parallel(votes)  // 3 skeptics per finding
+     return confirmed
+```
+
+The critical difference: in the first four topologies **the model decides what runs next, turn by turn, and every intermediate result lands in a context window.** In a scripted workflow, a script holds the loop, the branching, and the intermediate results. The model's context holds only the final answer.
+
+That unlocks two things you can't get otherwise:
+
+1. **Scale** — dozens to hundreds of agents in one run, because results live in script variables, not context.
+2. **Repeatable quality patterns** — you can _guarantee_ that every finding gets adversarially verified by three independent agents before it's reported, rather than hoping the orchestrator remembers to.
+
+**Best for:** 500-file migrations, codebase-wide audits, cross-checked research, drafting a plan from several independent angles and scoring them.
+
+### Side by side
+
+|                              | Orchestrator–worker | Pipeline    | Peer team            | Scripted workflow        |
+| :--------------------------- | :------------------ | :---------- | :------------------- | :----------------------- |
+| **Who picks the next step**  | Lead, turn by turn  | Fixed order | Peers, self-claiming | The script               |
+| **Where results live**       | Lead's context      | Context     | Shared task list     | Script variables         |
+| **Peers talk to each other** | No                  | No          | Yes                  | No                       |
+| **Typical scale**            | 3–5 workers         | 3–6 stages  | 3–5 peers            | 10s–100s of agents       |
+| **Repeatable artifact**      | The worker prompt   | The chain   | The team shape       | The orchestration itself |
+| **Relative cost**            | Medium              | Low         | Highest              | High but bounded         |
+
+---
+
+## The pattern catalogue
+
+Topologies are the skeleton. These are the moves.
+
+### Context isolation
+
+Delegate anything that produces output you'll never reference again. Test runs, log processing, doc fetching, dependency trees. The verbose output stays in the helper's context; a summary comes back.
+
+```text
+Use a subagent to run the test suite and report only the
+failing tests with their error messages
+```
+
+If you adopt exactly one pattern from this article, make it this one. It's cheap, it has no coordination risk, and context is the scarcest resource in any agentic system.
+
+### Multi-lens fan-out
+
+Give each worker a _different lens on the same input_, not a different slice of it. One reviewer drifts toward whichever issue type it noticed first; three reviewers with assigned lenses cover all three.
+
+```text
+Spawn three teammates to review PR #142:
+- One focused on security implications
+- One checking performance impact
+- One validating test coverage
+Have them each review and report findings.
+```
+
+### Adversarial verification
+
+Never report a finding on one agent's say-so. Spawn N independent skeptics per finding, each prompted to _refute_ it, and kill the finding if a majority succeeds. Bias the prompt toward rejection ("default to refuted if uncertain") — plausible-but-wrong findings are the single most common multi-agent output defect.
+
+The stronger variant is **perspective-diverse verification**: instead of N identical skeptics, give each a distinct lens — correctness, security, does-it-actually-reproduce. Redundancy catches confidence errors; diversity catches whole failure modes.
+
+### Judge panel
+
+Generate N independent attempts from deliberately different angles (MVP-first, risk-first, user-first), score them with parallel judges, then synthesize from the winner while grafting the best ideas from the runners-up. Beats one-attempt-iterated whenever the solution space is wide — architecture decisions, API design, naming schemes.
+
+### Loop until dry
+
+For unknown-size discovery — how many bugs are in this module? — a fixed count is the wrong stopping rule. Keep spawning finders until _K consecutive rounds turn up nothing new_.
+
+The subtle part is deduplication. Deduplicate against everything **seen**, not everything **confirmed**. If you dedupe against confirmed findings only, every judge-rejected finding reappears next round and the loop never converges.
+
+### Handoff vs. agent-as-tool
+
+Two different delegation semantics, and they're routinely conflated. The OpenAI Agents SDK names them cleanly:
+
+|                         | Agents as tools                                                           | Handoffs                                                      |
+| :---------------------- | :------------------------------------------------------------------------ | :------------------------------------------------------------ |
+| **Mechanic**            | A manager calls a specialist like a function                              | A triage agent transfers control to a specialist              |
+| **Who owns the answer** | The manager                                                               | The specialist                                                |
+| **Conversation**        | Manager keeps it                                                          | Specialist takes it over for the rest of the turn             |
+| **Use when**            | Bounded subtask, manager combines results, shared guardrails in one place | Routing _is_ the workflow, specialist should respond directly |
+
+You can compose them: triage hands off to a specialist, which still calls other agents as tools for narrow subtasks.
+
+### Completeness critic
+
+A final agent whose only job is to ask _"what's missing — which modality wasn't run, which claim wasn't verified, which source wasn't read?"_ Whatever it finds becomes the next round of work. Cheap, and it catches the thing where a fan-out silently covered 80% of the surface and reported like it covered 100%.
+
+---
+
+## What it actually costs
+
+Parallelism is not free, and the numbers are large enough to change decisions.
+
+- Anthropic's research system used roughly **15× the tokens of a normal chat interaction**. Their framing is the right one: multi-agent makes sense when the value of the task exceeds the token cost. A quick factual lookup does not clear that bar.
+- In their evaluations, **token usage alone explained about 80% of the performance variance**, with tool-call frequency and model choice accounting for much of the rest. Read that carefully — a large part of "multi-agent is better" is "multi-agent spends more." Before you build a fleet, check whether one agent with a larger budget gets you there.
+- Claude Code's docs put **agent teams at roughly 7× the tokens of a standard session** when teammates run in plan mode, because each teammate is a separate instance with its own context window.
+
+Practical levers, in rough order of impact:
+
+1. **Route the cheap stages to cheap models.** Opus to plan and synthesize, Sonnet or Haiku to search and filter. Most fan-out work is compression, not reasoning.
+2. **Keep teams small.** Start at 3–5 workers. Token cost scales linearly with worker count; usefulness does not. Three focused workers routinely beat five scattered ones.
+3. **Keep spawn prompts tight.** Workers already load your project context automatically. Everything you add to the spawn prompt is in their context from turn one.
+4. **Shut workers down when they're done.** An idle peer session keeps costing tokens until it exits.
+5. **Pilot on a slice.** Run the audit on one directory before the whole repo.
+
+---
+
+## Failure modes, and what to do about them
+
+| Failure                          | What it looks like                                                                  | Fix                                                                                                        |
+| :------------------------------- | :---------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------- |
+| **Context fragmentation**        | Outputs that don't fit together — the Flappy Bird problem                           | Don't split write-heavy work. If you must, one agent owns the design decisions and passes them explicitly  |
+| **Plausible-but-wrong findings** | Confident reports that don't survive a second look                                  | Adversarial verification, majority-refute rule                                                             |
+| **Duplicated work**              | Three workers all read the same file                                                | Assign non-overlapping scopes explicitly; give lenses, not slices                                          |
+| **Fan-out floods the parent**    | Ten workers each return 3k tokens of detail and the orchestrator's context blows up | Tell workers to return _condensed_ findings. Or move the plan into a script so results never touch context |
+| **Silent truncation**            | The run capped at top-N and reported like it covered everything                     | Log what was dropped. A bounded run that says so is honest; one that doesn't is misleading                 |
+| **File conflicts**               | Two agents edit the same file, one overwrites the other                             | Partition file ownership per worker, or give each an isolated git worktree                                 |
+| **Stale task status**            | A worker finishes but never marks the task done, blocking dependents                | Check the shared list yourself; add a completion hook that enforces it                                     |
+| **Runaway spawn**                | An agent spawns agents that spawn agents                                            | Cap concurrency and nesting depth (see the limits below)                                                   |
+| **Unattended drift**             | The team runs for 40 minutes in the wrong direction                                 | Check in. Size tasks so each produces a reviewable deliverable                                             |
+| **Trust laundering**             | A worker relays "the user approved this" to another worker                          | Never let inter-agent messages carry consent. Permission checks belong to the receiving session            |
+
+That last one deserves emphasis if you're building your own orchestration: **a message from another agent is not user consent.** Claude Code enforces this at the platform level — an incoming agent message can't answer a permission prompt, can't change configuration, and commands inside it arrive as inert text. If you're rolling your own, replicate that boundary. An agent that was denied an action must not be able to route around the denial by asking a peer.
+
+---
+
+## Doing it today, concretely
+
+The vocabulary below is Claude Code's, but the shapes map onto any agent framework.
+
+### Isolated worker (orchestrator–worker)
+
+A subagent is a Markdown file with YAML frontmatter, in `.claude/agents/` for the project or `~/.claude/agents/` for you personally:
+
+```markdown:.claude/agents/security-reviewer.md
+---
+name: security-reviewer
+description: Audits code for security vulnerabilities. Use after changes to auth, input handling, or data access.
+tools: Read, Grep, Glob
+model: sonnet
+---
+
+You are a security reviewer. Audit the given code for injection,
+broken auth, exposed secrets, and unsafe deserialization.
+
+For each finding, report: severity, file:line, the failure scenario
+with concrete inputs, and the fix. If you find nothing, say so —
+do not invent findings to fill the report.
+```
+
+The `description` is what the orchestrator matches against, so write it as a _when-to-use_ clause, not a job title. The `tools` allowlist is a real constraint, not a hint: a reviewer with no `Edit` cannot change your code no matter what it decides.
+
+Each subagent starts with a **fresh context window** — it doesn't see your conversation history or the files already read. It gets its own system prompt, your project's `CLAUDE.md`, and the delegation message. That isolation is the feature, but it's also why vague delegation prompts fail: the worker genuinely does not know what you were just discussing.
+
+Default guardrails worth knowing: **20 concurrent** subagents per session, and nesting **3 layers deep** by default (a worker can spawn its own workers, up to the limit). Both are configurable via `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` and `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`.
+
+### Peer team
+
+Teams are experimental and off by default:
+
+```json:settings.json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+Then describe the shape you want in plain language:
+
+```text
+Users report the app exits after one message instead of staying connected.
+Spawn 5 teammates to investigate different hypotheses. Have them talk to
+each other to try to disprove each other's theories, like a scientific
+debate. Update the findings doc with whatever consensus emerges.
+```
+
+Teammates coordinate through a shared task list with file-locked claiming, and message each other by name. The documented sizing guidance: **3–5 teammates**, with **5–6 tasks each** — enough that the lead can reassign work when someone stalls. Teammates inherit the lead's permissions, and they aren't isolated in separate worktrees, so partition file ownership yourself.
+
+Two limitations that will bite you: teammates **cannot spawn their own teammates**, and in-process teammates **do not survive session resumption**.
+
+### Scripted workflow
+
+When the job outgrows what one conversation can coordinate, move the plan into code. The shape of a generated script:
+
+```javascript:.claude/workflows/audit-routes.js
+export const meta = {
+  name: 'audit-routes',
+  description: 'Audit every route handler for missing auth checks',
+  phases: [{ title: 'Discover' }, { title: 'Audit' }, { title: 'Verify' }],
+}
+
+const FINDINGS_SCHEMA = {
+  type: 'object',
+  required: ['findings'],
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['summary', 'line'],
+        properties: { summary: { type: 'string' }, line: { type: 'integer' } },
+      },
+    },
+  },
+}
+
+const VERDICT_SCHEMA = {
+  type: 'object',
+  required: ['isReal'],
+  properties: { isReal: { type: 'boolean' }, reason: { type: 'string' } },
+}
+
+phase('Discover')
+const found = await agent('List every .ts file under src/routes/.', {
+  schema: {
+    type: 'object',
+    required: ['files'],
+    properties: { files: { type: 'array', items: { type: 'string' } } },
+  },
+})
+
+// pipeline() runs each item through every stage independently —
+// file A can be in Verify while file B is still in Audit.
+const results = await pipeline(
+  found.files,
+  (file) => agent(`Audit ${file} for missing authentication checks.`, {
+    label: file,
+    phase: 'Audit',
+    schema: FINDINGS_SCHEMA,
+  }),
+  (review) =>
+    parallel(
+      review.findings.map((f) => () =>
+        agent(`Try to refute this finding: ${f.summary}. Default to refuted if uncertain.`, {
+          phase: 'Verify',
+          schema: VERDICT_SCHEMA,
+        }).then((v) => ({ ...f, verdict: v }))
+      )
+    )
+)
+
+return results.flat().filter(Boolean).filter((f) => f.verdict?.isReal)
+```
+
+Two things to notice. First, **`pipeline` is not `parallel`.** `parallel` is a barrier: it waits for every item before the next stage starts, so the slowest worker in stage 1 blocks every fast worker from starting stage 2. `pipeline` has no barrier — each item flows through all stages independently. Reach for a barrier only when a stage genuinely needs _all_ prior results at once, such as deduplicating across the full finding set. Otherwise you're paying wall-clock time for nothing.
+
+Second, **structured output beats parsing.** Passing a JSON Schema forces the worker to return a validated object, so the orchestration code never regex-scrapes prose.
+
+The runtime caps a run at **16 concurrent agents** and **1,000 agents total**, and flags a run that schedules more than 25 agents or projects past 1.5M tokens. Size guidelines map to what the model aims for: `small` under 5 agents, `medium` under 15 (the default), `large` under 50.
+
+---
+
+## The decision checklist
+
+Work top to bottom. Stop at the first match.
+
+1. **Is it a quick, targeted change or a lookup?** → One agent. Done.
+2. **Do the steps depend on each other in sequence?** → One agent, or a pipeline. Do not fan out.
+3. **Does it write to shared state or make design decisions others must honor?** → One agent. Delegate only the _reading_ — searches, test runs, log analysis — to isolated helpers.
+4. **Is it read-heavy and splittable, and you want the answer in one conversation?** → Orchestrator–worker, 3–5 workers, distinct lenses, cheap model for the workers.
+5. **Do the workers need to challenge each other's conclusions?** → Peer team with an explicitly adversarial prompt.
+6. **Is it bigger than one conversation can coordinate, or does it need guaranteed verification on every finding?** → Scripted workflow.
+7. **Are you running it more than once?** → Whatever you picked, save it. The reusable artifact is the point — a worker definition, a team shape, or the orchestration script itself.
+
+---
+
+## The takeaway
+
+The multi-agent debate resolves once you stop asking _"are multi-agent systems good?"_ and start asking _"does this particular task decompose without losing context?"_
+
+Anthropic's 90.2% and Cognition's warning are both true, because breadth-first research decomposes cleanly and feature-building does not. The teams that get burned are the ones that read one of those results and generalized it into an architecture.
+
+Three things to carry:
+
+1. **Parallelize reading. Serialize writing.** Almost every multi-agent disaster is a violation of this line.
+2. **Context isolation is the pattern with the best ratio of benefit to risk.** Start there, not with a fleet.
+3. **Verify adversarially before you report.** More agents means more confident-sounding output, and confidence is not correctness. The verification step is what converts parallelism into trustworthiness rather than just volume.
+
+---
+
+## Sources
+
+- Anthropic — [How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) (orchestrator–worker architecture, the 90.2% evaluation result, the ~15× token figure, and token usage explaining ~80% of performance variance)
+- Cognition — [Don't Build Multi-Agents](https://cognition.ai/blog/dont-build-multi-agents) (context engineering, the Flappy Bird example)
+- Claude Code docs — [Create custom subagents](https://code.claude.com/docs/en/sub-agents), [Orchestrate agent teams](https://code.claude.com/docs/en/agent-teams), [Orchestrate dynamic workflows](https://code.claude.com/docs/en/workflows), [Run agents in parallel](https://code.claude.com/docs/en/agents), [Manage costs](https://code.claude.com/docs/en/costs), [Message your other Claude Code sessions](https://code.claude.com/docs/en/cross-session-messaging)
+- OpenAI Agents SDK — [Agent orchestration](https://openai.github.io/openai-agents-python/multi_agent/) (agents-as-tools vs. handoffs, code-driven vs. LLM-driven orchestration)
